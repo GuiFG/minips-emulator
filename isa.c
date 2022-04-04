@@ -1,32 +1,75 @@
 #include "isa.h"
+#include "isadecode.h"
+#include "isarun.h"
 #include "util.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-char *binarios[] = {
-	"100000", "100001", "001000", "001001",
-	"001111", "100011", "101011",
-	"001101", "001100",
-	"000100", "000101",
-	"000010", "000011", "001000",
-	"101010", "000010", "000000"
+
+int binarios[] = {
+	0x20, 0x21, 0x8, 0x9, 0x23,
+	0xf, 0x23, 0x2b, 0x28, 0x20, 0x24,
+	0xd, 0x25, 0x26, 0xc, 0x24,
+	0x4, 0x5, 0x6, 0x1,
+	0x2, 0x3, 0x8, 0x9,
+	0x2a, 0xa, 0x2b,
+	0x2, 0x0,
+	0x3
 };
 
 char *codigos[] = {
-	"add", "addu", "addi", "addiu",
-	"lui", "lw", "sw",
-	"ori", "andi",
-	"beq", "bne",
-	"j", "jal", "jr",
-	"slt", "srl", "sll"
+	"add", "addu", "addi", "addiu", "subu",
+	"lui", "lw", "sw", "sb", "lb", "lbu",
+	"ori", "or", "xor", "andi", "and",
+	"beq", "bne", "blez", "bgez",
+	"j", "jal", "jr", "jalr",
+	"slt", "slti", "sltu",
+	"srl", "sll",
+	"sra"
 };
 
-char *tipos = "RRIIIIIIIIIJJRRRR";
+char *tipos = "RRIIRIIIIIIIRRIRIIIIJJRRRIRRRR";
 
-#define TAMANHO_TABELA (sizeof (binarios) / sizeof(char *))
+#define TAMANHO_TABELA (sizeof (binarios) / sizeof(int))
+#define TAMANHO_COP1 22
 
-Registro* criarRegistro(char *binario, char *nomeCodigo, char tipo)
+int opcodeCop[TAMANHO_COP1][2] = {
+	{0x11, 0xfe}, {0x11, 0x4},
+	{0x12, 0}, {0x10, 0},
+	{0x18, 0}, {0x1a, 0},
+	{0x31, 0}, {0x35, 0},
+	{0x39, 0}, 
+	{0x11, 0x6}, {0x11, 0x6},
+	{0x11, 0x21}, {0x11, 0x20},
+	{0x11, 0x3}, {0x11, 0x2}, {0x11, 0x2},
+	{0x11, 0x0}, {0x11, 0x0}, {0x11, 0x1},
+	{0x11, 0xff},
+	{0x11, 0x8}, {0x11, 0x8}
+};
+
+char *codCop[] = {
+	"mfc1", "mtc1",
+	"mflo", "mfhi",
+	"mult", "div",
+	"lwc1", "ldc1",
+	"swc1", 
+	"mov.d", "mov.s",
+	"cvt.d.w", "cvt.s.d",
+	"div.d", "mul.s", "mul.d",
+	"add.d", "add.s", "sub.s",
+	"c.cond.fmt",
+	"bc1f", "bc1t"
+};
+
+char PIPELINE = 0;
+unsigned int FORWARDING = 0;
+
+extern char *nomeInstrucao;
+
+char TRACE;
+
+Registro* criarRegistro(int binario, char *nomeCodigo, char tipo)
 {
 	Registro *reg = (Registro *) malloc(sizeof(Registro));
 	reg->binario = binario;
@@ -34,6 +77,15 @@ Registro* criarRegistro(char *binario, char *nomeCodigo, char tipo)
 	reg->tipo = tipo;
 
 	return reg;
+}
+
+Cop1* criarInstrucaoCop1(int *opcode, char *nomeCodigo)
+{
+	Cop1 *cop1 = (Cop1 *) malloc(sizeof(Cop1));
+	cop1->opcode = opcode;
+	cop1->nomeCodigo = nomeCodigo;
+
+	return cop1;
 }
 
 Isa* criarISA()
@@ -49,583 +101,209 @@ Isa* criarISA()
 		i += 1;
 	}
 
+	isa->cop1 = (Cop1 **) malloc(sizeof(*isa->cop1) * TAMANHO_COP1);
+	
+	i = 0;
+	while (i < TAMANHO_COP1)
+	{
+		isa->cop1[i] = criarInstrucaoCop1(opcodeCop[i], codCop[i]);
+		i += 1;
+	}
+
+	isa->instructionCount = 0;
+	isa->countTypeR = 0;
+	isa->countTypeI = 0;
+	isa->countTypeJ = 0;
+	isa->countCycles = 0;
+	isa->countTypeFR = 0;
+	isa->countTypeFI = 0;
+	isa->frequencyPipelined = 33.8688 * 1000000;
+	isa->frequencyMonocycle = 8.4672 * 1000000;
+
 	return isa;
 }
 
-Registro *getRegistroOpcode(Isa *isa, char *opcode, char *tipo)
+Registro* getRegistroOpcode(Isa *isa, int opcode, char *tipo)
 {
 	int i;
+
 	for (i = 0; i < TAMANHO_TABELA; i++)
 	{
 		Registro *reg = isa->tabela[i];
-		if (!strcmp(reg->binario, opcode) && strchr(tipo, reg->tipo))
+		if (reg->binario == opcode && strchr(tipo, reg->tipo))
 			return reg;
 	}
 
 	return NULL;
 }
 
-void printCodgioTipoR(Isa *isa, char *binario)
-{
-	char opcode[7];
-	substring(binario, 0, 6, opcode); opcode[6] = 0;
-
-	char rs[6];
-	substring(binario, 6, 5, rs); rs[5] = 0;
-
-	char rt[6];
-	substring(binario, 11, 5, rt); rt[5] = 0;
-
-	char rd[6];
-	substring(binario, 16, 5, rd); rd[5] = 0;
-
-	char shamt[6];
-	substring(binario, 21, 5, shamt); shamt[5] = 0;
-
-	char funct[7];
-	substring(binario, 26, 6, funct); funct[6] = 0;
-
-	if (convertBinToInt(funct) == 12)
-	{
-		printf("syscall\n");
-		return;
-	}
-
-	Registro *reg = getRegistroOpcode(isa, funct, "R");
-	if (!reg)
-	{
-		printf("Não tem registro na ISA.\t%s\n", funct);
-		return;
-	}
-	char *nomeFunct = reg->nomeCodigo;
-
-	char *nomeRs = getNomeRegistrador((int) convertBinToInt(rs));
-	char *nomeRt = getNomeRegistrador((int) convertBinToInt(rt));
-	char *nomeRd = getNomeRegistrador((int) convertBinToInt(rd));
-
-
-	if (!strcmp(nomeFunct, "srl") || !strcmp(nomeFunct, "sll"))
-	{
-		int numeroShamt = (int) convertBinToInt(shamt);
-		printf("%s %s, %s, 0x%08x\n", nomeFunct, nomeRd, nomeRt, numeroShamt);
-	}
-	else if (!strcmp(nomeFunct, "jr"))
-		printf("%s %s\n", nomeFunct, nomeRs);
-	else
-		printf("%s %s, %s, %s\n", nomeFunct, nomeRd, nomeRs, nomeRt);
-}
-
-void printCodigoTipoI(Isa *isa, char *binario)
-{
-	char opcode[7];
-	substring(binario, 0, 6, opcode); opcode[6] = 0;
-
-	Registro *reg = getRegistroOpcode(isa, opcode, "I");
-	if (!reg)
-	{
-		printf("Não tem registro na ISA.\t%s\n", opcode);
-		return;
-	}
-	char *nomeOpcode = reg->nomeCodigo;
-
-	char rs[6];
-	substring(binario, 6, 5, rs); rs[5] = 0;
-
-	char rt[6];
-	substring(binario, 11, 5, rt); rt[5] = 0;
-
-	char imediato[17];
-	substring(binario, 16, 16, imediato); imediato[16] = 0;
-
-	char *nomeRs = getNomeRegistrador((int) convertBinToInt(rs));
-
-	char *nomeRt = getNomeRegistrador((int) convertBinToInt(rt));
-
-	int numeroImediato = convertBinToInt(imediato);
-
-	if (!strcmp(nomeOpcode, "lui"))
-	{
-		printf("%s %s, 0x%08x\n", nomeOpcode, nomeRt, numeroImediato);
-		return;
-	}
-
-
-	setNumeroSignedInt(&numeroImediato);
-	
-	if (!strcmp(nomeOpcode, "lw") || !strcmp(nomeOpcode, "sw"))
-	{
-		printf("%s %s, 0x%08x(%s)\n", nomeOpcode, nomeRt, numeroImediato, nomeRs);
-		return;
-	}
-
-	printf("%s %s, %s, 0x%08x\n", nomeOpcode, nomeRt, nomeRs, numeroImediato);
-}
-
-void printCodigoTipoJ(Isa *isa, char *binario)
-{
-	char opcode[7];
-	substring(binario, 0, 6, opcode); opcode[6] = 0;
-
-	Registro *reg = getRegistroOpcode(isa, opcode, "J");
-	if (!reg)
-	{
-		printf("Não tem registro na ISA.\t%s\n", opcode);
-		return;
-	}
-
-	char *nomeOpcode = reg->nomeCodigo;
-
-	char imediato[27];
-	substring(binario, 6, 26, imediato); imediato[26] = 0;
-
-	unsigned long long im = convertBinToInt(imediato);
-
-	im = im << 2;
-
-	printf("%s 0x%08llx\n", nomeOpcode, im);
-}
-
-void printInstrucaoISA(Isa *isa, char *binario)
-{
-	char opcode[7];
-	substring(binario, 0, 6, opcode); opcode[6] = 0;
-
-	int op = (int) convertBinToInt(opcode);
-
-	if (op == 0)
-	{
-		printCodgioTipoR(isa, binario);
-		return;
-	}
-
-
-	Registro *reg = getRegistroOpcode(isa, opcode, "IJ");
-	if (!reg)
-	{
-		printf("Não possui registro na ISA.\t%s\n", opcode);
-		return;
-	}
-
-	if (reg->tipo == 'I')
-		printCodigoTipoI(isa, binario);
-	else
-		printCodigoTipoJ(isa, binario);
-}
-
-void imprimirISA(Isa *isa)
+char* getNomeInstrucaoCop1(Isa *isa, int opcode, int func)
 {
 	int i;
-	printf("Binario\tCodigo\tTipo\n");
-	for (i = 0; i < TAMANHO_TABELA; i++)
-		printf("%s\t %s\t %c\n", isa->tabela[i]->binario, isa->tabela[i]->nomeCodigo, isa->tabela[i]->tipo);
-}
-
-int executaSyscall(Memoria *memoria)
-{
-	unsigned long int v0 = memoria->registradores[2].valor;
-
-	if (v0 == 1)
+	for (i = 0; i < TAMANHO_COP1; i++)
 	{
-		printf("%ld", memoria->registradores[4].valor);
-	}
-	else if (v0 == 4)
-	{
-		unsigned long int a0 = memoria->registradores[4].valor;
-
-		int offset = 1;
-
-		int lendo = 1;
-		while (lendo)
-		{
-			// printf("a0: 0x%08lx\n", a0);
-			int *codigo = getDataCodigo(memoria, a0);
-			if (!codigo)
-			{
-				printf("Endereco de memoria invalido.\n");
-				return 0;
-			}
-			// imprimirVetor2(codigo, ALINHAMENTO);
-
-			if (offset)
-				offset = (a0 % ENDERECO_DATA) % ALINHAMENTO;
-
-
-			int i;
-			for (i = ALINHAMENTO - 1 - offset; i >= 0; i--)
-			{
-				if (codigo[i] != 0)
-					printf("%c", codigo[i]);
-					// lendo = 1;
-				else
-				{
-					lendo = 0;
-					break;
-				}
-			}
-
-			a0 += ALINHAMENTO - offset;
-			offset = 0;
-		}
-	}
-	else if (v0 == 5)
-	{
-		int inteiro;
-		scanf("%d", &inteiro);
-		memoria->registradores[2].valor = inteiro;
-	}
-	else if (v0 == 10)
-	{
-		printf("\nPrograma finalizado!\n--------------------\n");
-		return 0;
-	}
-	else if (v0 == 11)
-	{
-		printf("%c", (int) memoria->registradores[4].valor);
-	}
-	else
-	{
-		printf("Erro syscall. v0 = %ld\n", v0);
-		return 0;
-	}
-
-	return 1;
-}
-
-void executaOpTipoR(Memoria *memoria, char *funct, int valores[])
-{
-	if (!strcmp(funct, "add"))
-	{
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		unsigned long int rt = memoria->registradores[valores[1]].valor;
-		int rd = valores[2];
-		setNumeroSigned(&rs);
-		setNumeroSigned(&rt);
-
-		if (rd != 0)
-			memoria->registradores[rd].valor = rs + rt;
-
-		// printf("add -> 0x%08lx\n", memoria->registradores[rd].valor);
-	}
-	else if (!strcmp(funct, "addu"))
-	{
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		unsigned long int rt = memoria->registradores[valores[1]].valor;
-		int rd = valores[2];
-		setNumeroSigned(&rs);
-		setNumeroSigned(&rt);
-
-		if(rd != 0)
-			memoria->registradores[rd].valor = rs + rt;
-
-		// printf("addu -> 0x%08lx\t rs=0x%08lx e rt=0x%08lx\n", memoria->registradores[rd].valor, rs, rt);
-	}
-	else if (!strcmp(funct, "slt"))
-	{
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		unsigned long int rt = memoria->registradores[valores[1]].valor;
-		setNumeroSigned(&rs);
-		setNumeroSigned(&rt);
-
-		int rd = valores[2];
-
-		if (rs < rt && rd != 0)
-			memoria->registradores[rd].valor = 1;
-		else if (rd != 0)
-			memoria->registradores[rd].valor = 0;
-
-		// printf("slt -> 0x%08lx\n", memoria->registradores[rd].valor);
-
-	}
-	else if (!strcmp(funct, "srl"))
-	{
-		int rd = valores[2];
-		unsigned long int rt = memoria->registradores[valores[1]].valor;
-		int shamt = valores[3];
-		setNumeroSigned(&rt);
-		setNumeroSignedInt(&shamt);
-
-		if (rd != 0)
-			memoria->registradores[rd].valor = rt >> shamt;
-
-		// printf("srl -> 0x%08lx\n", memoria->registradores[rd].valor);
-
-	}
-	else if (!strcmp(funct, "sll"))
-	{
-		int rd = valores[2];
-		unsigned long int rt = memoria->registradores[valores[1]].valor;
-		int shamt = valores[3];
-		setNumeroSigned(&rt);
-		setNumeroSignedInt(&shamt);
-
-		if (rd != 0)
-			memoria->registradores[rd].valor = rt << shamt;
-
-		// printf("sll -> 0x%08lx\trt=0x%08lx e shamt=%d\n", memoria->registradores[rd].valor, rt, shamt);
-	}
-	else if (!strcmp(funct, "jr"))
-	{
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-
-		memoria->registradores[32].valor = rs - ALINHAMENTO;
-		// printf("jr -> pc= 0x%08lx\trs=0x%08lx e alin= %d\n", memoria->registradores[32].valor, rs, ALINHAMENTO);
-	}
-}
-
-int runCodigoTipoR(Memoria *memoria, Isa *isa, char *binario)
-{
-	char rs[6];
-	substring(binario, 6, 5, rs); rs[5] = 0;
-
-	char rt[6];
-	substring(binario, 11, 5, rt); rt[5] = 0;
-
-	char rd[6];
-	substring(binario, 16, 5, rd); rd[5] = 0;
-
-	char shamt[6];
-	substring(binario, 21, 5, shamt); shamt[5] = 0;
-
-	char funct[7];
-	substring(binario, 26, 6, funct); funct[6] = 0;
-
-
-	char *nomeFunct;
-	int valorFunct = (int) convertBinToInt(funct);
-	if (valorFunct != 12)
-	{
-		Registro *reg = getRegistroOpcode(isa, funct, "R");
-		if (!reg)
-		{
-			printf("Não tem registro na ISA.\t%s\n", funct);
-			return 0;
-		}
-
-		nomeFunct = reg->nomeCodigo;
-	}
-	else
-		return executaSyscall(memoria);
-
-	int numeroRS = (int) convertBinToInt(rs);
-	int numeroRT = (int) convertBinToInt(rt);
-	int numeroRD = (int) convertBinToInt(rd);
-	int valorShamt = (int) convertBinToInt(shamt);
-
-	int valores[5] = { numeroRS, numeroRT, numeroRD, valorShamt, valorFunct };
-	executaOpTipoR(memoria, nomeFunct, valores);
-
-	return 1;
-}
-
-void executaOpTipoI(Memoria *memoria, char *opcode, int valores[])
-{
-	if (!strcmp(opcode, "addi"))
-	{
-		int rt = valores[1];
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		int imediato = valores[2];
-		setNumeroSignedInt(&imediato);
-
-		if (rt != 0)
-			memoria->registradores[rt].valor = rs + imediato;
-
-		// printf("addi -> 0x%08lx\n", memoria->registradores[rt].valor);
-	}
-	else if(!strcmp(opcode, "addiu"))
-	{
-		int rt = valores[1];
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		int imediato = valores[2];
-		setNumeroSignedInt(&imediato);
-
-		if (rt != 0)
-			memoria->registradores[rt].valor = rs + imediato;
-
-		// printf("addiu -> 0x%08lx\trs=0x%08lx e im=%d\n", memoria->registradores[rt].valor, rs, imediato);
-	}
-	else if(!strcmp(opcode, "lui"))
-	{
-		int rt = valores[1];
-		unsigned long long bin = dec2bin(valores[2]);
-		char *binString = getString(bin);
-		char *upper = convertBinToUpper(binString);
-
-		unsigned long int endereco = convertBinToInt(upper);
-
-		if (rt != 0)
-			memoria->registradores[rt].valor = endereco;
-
-		// printf("lui -> 0x%08lx\n", memoria->registradores[rt].valor);
-
-		free(upper);
-		free(binString);
-	}
-	else if (!strcmp(opcode, "lw"))
-	{
-		int rt = valores[1];
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		int imediato = valores[2];
-		setNumeroSignedInt(&imediato);
+		Cop1 *cop1 = isa->cop1[i];
 		
-		char* bin = getDataBinario(memoria, rs + imediato);
-		unsigned long int valorMemoria = convertBinToInt(bin);
-		
-		if (rt != 0)
-			memoria->registradores[rt].valor = valorMemoria;
-		
+		if (cop1->opcode[0] == opcode && cop1->opcode[1] == func)
+			return cop1->nomeCodigo;
 	}
-	else if (!strcmp(opcode, "sw"))
-	{
-		unsigned long int rt = memoria->registradores[valores[1]].valor;
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		int imediato = valores[2];
-		setNumeroSignedInt(&imediato);
 
-		setDataMemoria(memoria, rs + imediato, rt);
-		
-		// printf("sw -> endereco=0x%08lx\t rs=0x%08lx im=%d\t valor=0x%08lx\n", rs + imediato, rs, imediato, rt);
-	}
-	else if (!strcmp(opcode, "ori"))
-	{
-		int rt = valores[1];
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		int imediato = valores[2];
-		setNumeroSignedInt(&imediato);
-
-		if (rt != 0)
-			memoria->registradores[valores[1]].valor = rs | imediato;
-
-		// printf("ori -> 0x%08lx\n", memoria->registradores[rt].valor);
-	}
-	else if (!strcmp(opcode, "andi"))
-	{
-		int rt = valores[1];
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		int imediato = valores[2];
-		setNumeroSignedInt(&imediato);
-
-		if (rt != 0)
-			memoria->registradores[rt].valor = rs & imediato;
-
-		// printf("andi -> 0x%08lx\n", memoria->registradores[rt].valor);
-	}
-	else if (!strcmp(opcode, "beq"))
-	{
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		unsigned long int rt = memoria->registradores[valores[1]].valor;
-		int imediato = valores[2];
-		setNumeroSignedInt(&imediato);
-
-		if (rs == rt)
-			memoria->registradores[32].valor += (imediato * ALINHAMENTO);
-		// printf("\n");
-	}
-	else if (!strcmp(opcode, "bne"))
-	{
-		unsigned long int rs = memoria->registradores[valores[0]].valor;
-		unsigned long int rt = memoria->registradores[valores[1]].valor;
-		int imediato = valores[2];
-		setNumeroSignedInt(&imediato);
-
-		if (rs != rt)
-			memoria->registradores[32].valor += (imediato * ALINHAMENTO);
-		// printf("\n");
-	}
+	return NULL;
 }
 
-int runCodigoTipoI(Memoria *memoria, Isa *isa, char *binario)
+int isInstrucaoCop1(Isa *isa, int opcode)
 {
-	char opcode[7];
-	substring(binario, 0, 6, opcode); opcode[6] = 0;
-
-	Registro *reg = getRegistroOpcode(isa, opcode, "I");
-	if (!reg)
+	int i;
+	for (i = 0; i < TAMANHO_COP1; i++)
 	{
-		printf("Não tem registro na ISA.\t%s\n", opcode);
-		return 0;
+		Cop1 *aux = isa->cop1[i];
+
+		if (aux->opcode[0] == opcode)
+			return 1;
 	}
-	char *nomeOpcode = reg->nomeCodigo;
 
-	char rs[6];
-	substring(binario, 6, 5, rs); rs[5] = 0;
-
-	char rt[6];
-	substring(binario, 11, 5, rt); rt[5] = 0;
-
-	char imediato[17];
-	substring(binario, 16, 16, imediato); imediato[16] = 0;
-
-	int numeroRS = (int) convertBinToInt(rs);
-	int numeroRT = (int) convertBinToInt(rt);
-	int valorImediato = (int) convertBinToInt(imediato);
-
-	int valores[3] = { numeroRS, numeroRT, valorImediato };
-	executaOpTipoI(memoria, nomeOpcode, valores);
-
-	return 1;
+	return 0;
 }
 
-void executaOpTipoJ(Memoria *memoria, char *opcode, unsigned long int imediato)
+int getTipoInstrucao(Isa *isa, unsigned int binario)
 {
-	if (!strcmp(opcode, "j"))
-	{
-		memoria->registradores[32].valor = imediato - ALINHAMENTO;
-		// printf("\n");
-	}
-	else if (!strcmp(opcode, "jal"))
-	{
-		memoria->registradores[31].valor = memoria->registradores[32].valor + ALINHAMENTO;
-		memoria->registradores[32].valor = imediato - ALINHAMENTO;
-		// printf("jal -> pc= 0x%08lx\t ra= 0x%08lx\n", memoria->registradores[32].valor + ALINHAMENTO, memoria->registradores[31].valor);
-	}
-}
-
-int runCodigoTipoJ(Memoria *memoria, char *binario, char *nomeOpcode)
-{
-	char imediato[27];
-	substring(binario, 6, 26, imediato); imediato[26] = 0;
-
-	unsigned long long im = convertBinToInt(imediato);
-
-	im = im << 2;
-
-	executaOpTipoJ(memoria, nomeOpcode, im);
-}
-
-int executarCodigo(Memoria *memoria, Isa *isa, char *binario)
-{
-	//printInstrucaoISA(isa, binario);
-	// printf(" ");
-
-	char opcode[7];
-	substring(binario, 0, 6, opcode); opcode[6] = 0;
-
-	int op = convertBinToInt(opcode);
+	int op = binario >> 26;
 
 	int correto = 0;
 	if (op == 0)
 	{
-		correto = runCodigoTipoR(memoria, isa, binario);
-		if (correto)
-			memoria->registradores[32].valor += ALINHAMENTO;
-		return correto;
+		op = binario & 0x3f;
+		if (!isInstrucaoCop1(isa, op))
+			return 1;
 	}
 
-	Registro *reg = getRegistroOpcode(isa, opcode, "IJ");
-	if (!reg)
+	if (isInstrucaoCop1(isa, op))
+		return 4;
+
+	Registro *reg = NULL;
+	reg = getRegistroOpcode(isa, op, "IJ");	
+
+	if (reg != NULL)
 	{
-		printf("Nao possui registro na ISA.\t%s\n", opcode);
-		return 0;
+		if (reg->tipo == 'I')
+			return 2;
+	
+		return 3;
 	}
 
-	if (reg->tipo == 'I')
-		correto = runCodigoTipoI(memoria, isa, binario);
-	else
-		correto = runCodigoTipoJ(memoria, binario, reg->nomeCodigo);
+	return 0;	
+}
+
+void setNomeInstrucao(Isa *isa, int tipoInstrucao, unsigned int binario)
+{
+	switch(tipoInstrucao)
+	{
+		case 1:
+			setNomeTipoR(isa, binario);
+			break;
+		case 2:
+			setNomeTipoI(isa, binario);
+			break;
+		case 3:
+			setNomeTipoJ(isa, binario);
+			break;
+		case 4:
+			setNomeTipoCop1(isa, binario);
+			break;
+		default:
+			return;
+	}
+}
+
+void printInstrucaoISA(Memoria *memoria, Isa *isa, unsigned int binario)
+{
+	unsigned int pc = memoria->registradores[32].valor;
+	printf("%08x:\t", pc);
+
+	int tipoInstrucao = getTipoInstrucao(isa, binario);
+
+	switch(tipoInstrucao)
+	{
+		case 1:
+			printCodigoTipoR(isa, binario);
+			break;
+		case 2:
+			printCodigoTipoI(isa, binario);
+			break;
+		case 3:
+			printCodigoTipoJ(isa, binario, pc);
+			break;
+		case 4:
+			printCodigoCop1(isa, binario);
+			break;
+		default:
+			printf("Não possui instrução na ISA.\n");
+			return;
+	}
+
+	if (!RUNDEC)
+		memoria->registradores[32].valor += ALINHAMENTO;
+}
+
+int executarCodigo(Memoria *memoria, Isa *isa, unsigned int binario)
+{
+	
+	if (RUNDEC)
+		printInstrucaoISA(memoria, isa, binario);
+
+	isa->instructionCount += 1;
+
+	
+	int tipoInstrucao = getTipoInstrucao(isa, binario);
+	setNomeInstrucao(isa, tipoInstrucao, binario);
+
+	int correto = 0;
+	switch(tipoInstrucao)
+	{
+		case 1:
+			isa->countTypeR += 1;
+
+			correto = runCodigoTipoR(memoria, isa, binario);
+			break;
+		case 2:
+			isa->countTypeI += 1;
+
+			correto = runCodigoTipoI(memoria, binario, &isa->countCycles);
+			break;
+		case 3:
+			isa->countTypeJ += 1;
+
+			correto = runCodigoTipoJ(memoria, binario);
+			break;
+		case 4:
+			correto = runCodigoCop1(memoria, isa, binario);
+			break;
+		default:
+			return 0;
+	}
 
 	if (correto)
+	{
+		isa->countCycles += CycleTime;
+			
+		if (PIPELINE == 0 && FORWARDING != 0)
+		{
+			PIPELINE = 1;
+		}
+		else if (PIPELINE == 1)
+		{
+			memoria->registradores[32].valor = FORWARDING;
+			FORWARDING = 0;
+			PIPELINE = 0;
+			return 1;
+		}
+		
 		memoria->registradores[32].valor += ALINHAMENTO;
+	} 
 
+	if (DEBUG)
+		LEVEL = 1;
+		
 	return correto;
 }
 
@@ -634,6 +312,11 @@ void liberarISA(Isa *isa)
 	int i;
 	for (i = 0; i < TAMANHO_TABELA; i++)
 		free(isa->tabela[i]);
+	
+	for (i = 0; i < TAMANHO_COP1; i++)
+		free(isa->cop1[i]);
+	
 	free(isa->tabela);
+	free(isa->cop1);
 	free(isa);
 }
